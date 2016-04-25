@@ -1,0 +1,637 @@
+/**
+   All available javacc options, refer to https://javacc.java.net/
+   Preferred Javacc version: 6.0
+*/
+
+options
+{
+  JDK_VERSION = "1.7";
+
+  // Javacc options.
+  //LOOKAHEAD = 2;
+  ERROR_REPORTING = true;
+  JAVA_UNICODE_ESCAPE = true;
+  STATIC = false;
+  IGNORE_CASE = true;
+  OUTPUT_DIRECTORY = "javacc";
+}
+
+PARSER_BEGIN(XdlParser)
+package info.xdl.javacc;
+
+import info.xdl.*;
+import info.xdl.common.*;
+import info.xdl.Compiler;
+import java.util.List;
+import java.util.ArrayList;
+
+public class XdlParser
+{
+  private Compiler compiler = null;
+
+  private ParseContext ctx;
+  private DataTypes dataTypes;
+
+  public XdlParser(Compiler compiler, java.io.InputStream stream)
+  {
+      this(stream);
+
+      this.compiler = compiler;
+      this.ctx = compiler.getContext();
+      this.dataTypes = compiler.dataTypes();
+  }
+
+  private XdlToken token(Token tk)
+  {
+      XdlToken result = new XdlToken();
+
+      result.beginLine = tk.beginLine;
+      result.beginColumn = tk.beginColumn;
+      result.endLine = tk.endLine;
+      result.endColumn = tk.endColumn;
+      result.image = tk.image;
+
+      return result;
+  }
+
+  public Compiler compiler()
+  {
+      return this.compiler;
+  }
+
+  private XdlToken token(String image,Token tk1,Token tk2)
+  {
+     XdlToken result = new XdlToken();
+
+     result.beginLine = (tk1.beginLine<tk2.beginLine? tk1.beginLine : tk2.beginLine);
+     result.beginColumn = (tk1.beginColumn<tk2.beginColumn? tk1.beginColumn : tk2.beginColumn);
+
+     result.endLine = (tk1.endLine > tk2.endLine? tk1.endLine : tk2.endLine);
+     result.endColumn = (tk1.endColumn > tk2.endColumn? tk1.endColumn : tk2.endColumn);
+     result.image = image;
+
+     return result;
+  }
+
+}
+
+PARSER_END(XdlParser)
+
+boolean mdl() :
+{
+  boolean compilingOk = true;
+}
+{
+  (
+    ( compilingOk = includes()
+    {
+      if (!compilingOk)
+      {
+        return false;
+      }
+    })*
+    ( namespace()   )?
+    ( enumeration() | message())*
+    <EOF>
+  )
+  {
+    ctx.pop();    
+    return true;
+  }
+}
+
+boolean xdl() :
+{
+  boolean compilingOk = true;
+}
+{
+  (
+    ( compilingOk = includes()
+    {
+      if (!compilingOk)
+      {
+        return false;
+      }
+    })*
+    ( namespace()   )?
+    ( enumeration()
+    | message()
+    | interfaceDef())*
+    <EOF>
+  )
+  {
+    ctx.pop();    
+    return true;
+  }
+}
+ 
+void namespace() :
+{
+  XdlToken ns = null;
+}
+{
+  ( < NAMESPACE > (ns = name()) (<SEMICOLON >)+ )
+  {
+    compiler.createNamespace(ns.image);
+  }
+}
+
+boolean includes() :
+{
+  Token t;
+}
+{
+  ( < INCLUDE > t = < STRING_LITERAL > (<SEMICOLON >)+ )
+  {
+    return compiler.parse(t.image.substring(1,t.image.length()-1)); // remove quotation mark.
+  }
+}
+
+void enumeration() :
+{
+  Token t1,t2;
+  EnumType enumType = null;
+}
+{
+  ( < ENUM > t1 = < ID >
+    {
+      ASTEnum enumNode = compiler.createEnum(token(t1));
+      enumType = enumNode.getEnumType();
+    }
+
+    < LBRACE >
+     t2 = < ID >
+     {
+        compiler.createEnumValue(enumNode,token(t2));
+     }
+     ( < COMMA > t2 = < ID >
+     {
+        compiler.createEnumValue(enumNode,token(t2));
+     })*
+  < RBRACE > (<SEMICOLON >)*)
+}
+
+void message() :
+{
+  Token t1;
+  DataType type;
+}
+{
+  (
+   ( // Message
+      LOOKAHEAD(3)
+      (< MESSAGE > t1 = < ID > < INHERIT > type = compoundType() )
+      {
+        compiler.createMessage(token(t1),type);
+      }
+    | (< MESSAGE > t1 = < ID > )
+      {
+        compiler.createMessage(token(t1));
+      }
+     ) // Message
+    < LBRACE >
+      ( messageField() )*
+      ( primaryKey()   )?
+    < RBRACE > (<SEMICOLON >)*
+  )
+  {
+    ctx.pop();
+  }
+}
+
+void messageField() :
+{
+  Token seq,name;
+  boolean required = true;
+  DataType type = null;
+}
+{
+   (
+     seq = < INT_LITERAL > < COLON >
+     type = dataType()
+     name = < ID > 
+     (  < OPTIONAL > {required = false; }
+       | < REQUIRED > {required = true; }
+     )?
+     (<SEMICOLON >)+
+   )
+   {
+     compiler.createMessageField(token(name),type,Integer.valueOf(seq.image),required);
+   }
+}
+
+void primaryKey() :
+{
+  Token t;
+}
+{
+   (
+      < PRIMARYKEY > < LPAREN >
+         (t = < ID >)
+      < RPAREN > (<SEMICOLON >)+
+   )
+   {
+     compiler.createMessagePK(token(t));
+   }
+}
+
+void interfaceDef() :
+{
+  Token t1;
+  DataType type;
+}
+{
+  (
+   ( // interface
+     (< INTERFACE > t1 = < ID > )
+      {
+        compiler.createInterface(token(t1));
+      }
+     ) // Message
+    < LBRACE >
+      ( interfaceFunc() )*
+    < RBRACE > (<SEMICOLON >)*
+  )
+  {
+    ctx.pop();
+  }
+}
+
+void interfaceFunc() :
+{
+  Token name;
+  DataType returnType = null;
+  List<FunctionParam> params;
+}
+{
+   (
+     returnType = dataType()
+     name = < ID >
+     (
+       LOOKAHEAD(2)
+       ( < LPAREN > params = paramList() < RPAREN >)
+       {
+         compiler.createFunction(token(name),returnType,params);
+       }
+     |
+       (< LPAREN >  < RPAREN >)
+       {
+         compiler.createFunction(token(name),returnType);
+       }
+     )
+     (<SEMICOLON >)+
+   )
+}
+
+List<FunctionParam> paramList():
+{
+  List<FunctionParam> result = new ArrayList<FunctionParam>();
+  FunctionParam p;
+}
+{
+   ( ( p = param() { result.add(p);} )
+     ( < COMMA > p = param() { result.add(p); })*
+   )
+   {
+     return result;
+   }
+}
+
+FunctionParam param():
+{
+  DataType dataType;
+  Token name;
+}
+{
+   ( dataType = dataType() name = < ID >)
+   {
+     return new FunctionParam(name.image,dataType);
+   }
+}
+
+DataType dataType() :
+{
+  DataType r = null;
+}
+{
+  (
+     r = basicType()
+   | r = containerListType()
+   | r = containerSetType()
+   | r = containerMapType()
+   | r = compoundType()
+  )
+  {
+    return r;
+  }
+}
+
+DataType basicType()  :
+{
+  DataType r = null;
+}
+{
+  (
+  < BOOLEAN >  { r = DataTypes.boolType;     }
+| < BYTE >     { r = DataTypes.byteType;     }
+| < DATETIME > { r = DataTypes.datetimeType; }
+| < DOUBLE >   { r = DataTypes.doubleType;   }
+| < INT16 >    { r = DataTypes.int16Type;    }
+| < INT32 >    { r = DataTypes.int32Type;    }
+| < INT64 >    { r = DataTypes.int64Type;    }
+| < STRING >   { r = DataTypes.stringType;   }
+| < VOID >     { r = VoidType.instance;      })  
+  {
+    return r;
+  } 
+}
+
+DataType containerListType() :
+{
+  DataType subType = null;
+}
+{
+  (
+    < LIST > < LT > subType = dataType() < GT >
+  )
+  {
+    return dataTypes.createListType(subType);
+  }     
+}
+
+DataType containerSetType() :
+{
+  DataType subType = null;
+}
+{
+  (
+    < SET > < LT > subType = dataType() < GT >
+  )
+  {
+     return dataTypes.createSetType(subType);
+  }     
+}
+
+DataType containerMapType() :
+{
+  DataType keyType = null, valueType = null;
+}
+{
+  (
+    < MAP > < LT > keyType = dataType()  < COMMA > valueType = dataType() < GT >
+  )
+  {
+     return dataTypes.createMapType(keyType,valueType);
+  }     
+}
+
+// Compund type includes enumeration  and message.
+DataType compoundType() :
+{
+  XdlToken typeName;
+}
+{
+  (  typeName = name() )
+  {
+     DataType type = dataTypes.findType(typeName.image);
+     if (type == null)
+     {
+        compiler.semanticError(typeName, "'" + typeName.image + " cann't be found.");
+     }
+
+     return type;
+  }
+}
+
+XdlToken name() :
+{
+  Token t1=null, t2=null;
+  String name = "";
+}
+{
+  ( t1 = < ID >    
+    (LOOKAHEAD(2) < DOT > (t2 = < ID >)
+    {
+      name += "." + t2.image;
+    }
+    )*
+  )
+  {
+     ctx.setToken(t1);
+     name = t1.image + name;
+
+     XdlToken tk;
+     if (t2 != null)
+     {
+       tk = token(name,t1,t2);
+     }
+     else
+     {
+       tk = token(t1);
+     }
+     tk.image = name;
+
+     return tk;
+  }
+}
+
+/* WHITE SPACE */
+SKIP :
+{
+  " "
+| "\t"
+| "\n"
+| "\r"
+| "\f"
+}
+
+/* COMMENTS */
+MORE :
+{
+  "//" : IN_SINGLE_LINE_COMMENT
+|
+  <"/**" ~["/"]> { input_stream.backup(1); } : IN_FORMAL_COMMENT
+|
+  "/*" : IN_MULTI_LINE_COMMENT
+}
+
+<IN_SINGLE_LINE_COMMENT>
+SPECIAL_TOKEN :
+{
+  <SINGLE_LINE_COMMENT: "\n" | "\r" | "\r\n" > : DEFAULT
+}
+
+<IN_FORMAL_COMMENT>
+SPECIAL_TOKEN :
+{
+  <FORMAL_COMMENT: "*/" > : DEFAULT
+}
+
+<IN_MULTI_LINE_COMMENT>
+SPECIAL_TOKEN :
+{
+  <MULTI_LINE_COMMENT: "*/" > : DEFAULT
+}
+
+<IN_SINGLE_LINE_COMMENT,IN_FORMAL_COMMENT,IN_MULTI_LINE_COMMENT>
+MORE :
+{
+  < ~[] >
+}
+
+/* LITERALS */
+TOKEN :
+{
+  < BOOL_LIT_TRUE  : "true">
+| < BOOL_LIT_FALSE : "false">
+| < INT_LITERAL:
+        <DECIMAL_LITERAL> (["l","L"])?
+      | <HEX_LITERAL> (["l","L"])?
+      | <OCTAL_LITERAL> (["l","L"])?
+  >
+|
+  < #DECIMAL_LITERAL: ["1"-"9"] (["0"-"9"])* >
+|
+  < #HEX_LITERAL: "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+ >
+|
+  < #OCTAL_LITERAL: "0" (["0"-"7"])* >
+|
+  < FLOATING_POINT_LITERAL:
+        (["0"-"9"])+ "." (["0"-"9"])* (<EXPONENT>)? (["f","F","d","D"])?
+      | "." (["0"-"9"])+ (<EXPONENT>)? (["f","F","d","D"])?
+      | (["0"-"9"])+ <EXPONENT> (["f","F","d","D"])?
+      | (["0"-"9"])+ (<EXPONENT>)? ["f","F","d","D"]
+  >
+|
+  < #EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+ >
+|
+  < CHARACTER_LITERAL:
+      "'"
+      (   (~["'","\\","\n","\r"])
+        | ("\\"
+            ( ["n","t","b","r","f","\\","'","\""]
+            | ["0"-"7"] ( ["0"-"7"] )?
+            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+            )
+          )
+      )
+      "'"
+  >
+|
+  < STRING_LITERAL:
+      "\""
+      (   (~["\"","\\","\n","\r"])
+        | ("\\"
+            ( ["n","t","b","r","f","\\","'","\""]
+            | ["0"-"7"] ( ["0"-"7"] )?
+            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+            )
+          )
+      )*
+      "\""
+  >
+}
+
+/* MDL RESERVED WORDS */
+
+TOKEN :
+{
+  < ABSTRACT:   "abstract"  >
+| < ACTOR:      "actor"     >
+| < AGGREGATE:  "aggregate" >
+| < BOOLEAN:    "boolean"   >
+| < BYTE:       "byte"      >
+| < CONST:      "const"     >
+| < CONTEXT:    "context"   >
+| < DATETIME:   "datetime"  >
+| < DOUBLE:     "double"    >
+| < ENUM:       "enum"      >
+| < FUNCTION:   "function"  >
+| < INCLUDE:    "include"   >
+| < INHERIT:    "inherit"   >
+| < INTERFACE:  "interface" >
+| < INT16:      "int16"     >
+| < INT32:      "int32"     >
+| < INT64:      "int64"     >
+| < LIST:       "list"      >
+| < MAP:        "map"       >
+| < MESSAGE:    "message"   >
+| < NAMESPACE:  "namespace" >
+| < OPTIONAL:   "optional"  >
+| < PRIMARYKEY: "primarykey">
+| < REQUIRED:   "required"  >
+| < RETURN :    "return"    >
+| < SET:        "set"       >
+| < STRING:     "string"    >
+| < TYPEDEF:    "typedef"   >
+| < VOID:       "void"      >
+}
+
+/* IDENTIFIERS */
+TOKEN :
+{
+  < ID: <LETTER> (<LETTER>|<DIGIT>)* >
+|
+  < #LETTER:
+      [
+       "\u0024",
+       "\u0041"-"\u005a",
+       "\u005f",
+       "\u0061"-"\u007a",
+       "\u00c0"-"\u00d6",
+       "\u00d8"-"\u00f6",
+       "\u00f8"-"\u00ff",
+       "\u0100"-"\u1fff",
+       "\u3040"-"\u318f",
+       "\u3300"-"\u337f",
+       "\u3400"-"\u3d2d",
+       "\u4e00"-"\u9fff",
+       "\uf900"-"\ufaff"
+      ]
+  >
+|
+  < #DIGIT:
+      [
+       "\u0030"-"\u0039",
+       "\u0660"-"\u0669",
+       "\u06f0"-"\u06f9",
+       "\u0966"-"\u096f",
+       "\u09e6"-"\u09ef",
+       "\u0a66"-"\u0a6f",
+       "\u0ae6"-"\u0aef",
+       "\u0b66"-"\u0b6f",
+       "\u0be7"-"\u0bef",
+       "\u0c66"-"\u0c6f",
+       "\u0ce6"-"\u0cef",
+       "\u0d66"-"\u0d6f",
+       "\u0e50"-"\u0e59",
+       "\u0ed0"-"\u0ed9",
+       "\u1040"-"\u1049"
+      ]
+  >
+}
+
+/* SEPARATORS */
+TOKEN :
+{
+  < LPAREN:    "("  >
+| < RPAREN:    ")"  >
+| < LBRACE:    "{"  >
+| < RBRACE:    "}"  >
+| < LBRACKET:  "["  >
+| < RBRACKET:  "]"  >
+| < SEMICOLON: ";"  >
+| < COMMA:     ","  >
+| < DOT:       "."  >
+| < CONVERT  : "->" >
+| < CONVERT_R: "<-" >
+| < ASSIGN:    "="  >
+| < GT:        ">"  >
+| < LT:        "<"  >
+| < COLON:     ":"  >
+}
+
+TOKEN :
+{
+ < SEP_REQ: <SEMICOLON> (<SEMICOLON>)* >
+}
